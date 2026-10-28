@@ -85,8 +85,6 @@ jobs:
 
       - name: Collect agent changes
         if: always()
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           mkdir -p .agent
           # claude-code-action restores these paths from the base branch so PR-controlled config never
@@ -95,8 +93,9 @@ jobs:
             ':!CLAUDE.md' ':!CLAUDE.local.md' ':!.husky'
           git diff --cached --binary > .agent/agent.patch
           git diff --cached --stat
-          # Early check with the literal token value; the verify job re-checks without secrets.
-          node .github/scripts/guard-patch.mjs .agent/agent.patch
+          # Early check with the guard as committed (the agent cannot have altered it); verify re-checks.
+          git show HEAD:.github/scripts/guard-patch.mjs > "$RUNNER_TEMP/guard-patch.mjs"
+          node "$RUNNER_TEMP/guard-patch.mjs" .agent/agent.patch
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -184,7 +183,7 @@ jobs:
   publish:
     name: Publish results
     needs: [agent, verify]
-    if: always() && needs.agent.result != 'skipped'
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -209,7 +208,8 @@ jobs:
 
       - name: Commit and push tests
         id: push
-        if: needs.verify.result == 'success'
+        # Never push partial work from an agent run that errored, even if it happens to pass.
+        if: needs.verify.result == 'success' && needs.agent.outputs.agent_outcome == 'success'
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

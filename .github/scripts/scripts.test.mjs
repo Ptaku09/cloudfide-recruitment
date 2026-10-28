@@ -121,3 +121,27 @@ test('render: verification did not run', () => {
   assert.match(md, /Verification did not run/)
   assert.doesNotMatch(md, /No test changes were needed/)
 });
+
+test('scans added lines that start with ++ for secrets', () => {
+  const patch = diff('backend/tests/a.test.ts', 'backend/tests/a.test.ts', "+++i // sk-ant-oat01-abcdefghijkl");
+  assert.equal(checkPatch(patch).length, 1);
+});
+
+test('rejects binary patches', () => {
+  const patch = 'diff --git a/backend/tests/a.test.ts b/backend/tests/a.test.ts\nnew file mode 100644\nGIT binary patch\nliteral 12\nTcmZ?\n';
+  assert.match(checkPatch(patch).join(), /[Bb]inary/);
+});
+
+test('rejects symlinks and mode changes', () => {
+  const symlink = 'diff --git a/backend/tests/c.test.ts b/backend/tests/c.test.ts\nnew file mode 120000\n--- /dev/null\n+++ b/backend/tests/c.test.ts\n@@ -0,0 +1 @@\n+../../.github/workflows/x.yml\n';
+  const chmod = 'diff --git a/backend/tests/d.test.ts b/backend/tests/d.test.ts\nold mode 100644\nnew mode 100755\n';
+  assert.match(checkPatch(symlink).join(), /mode/);
+  assert.match(checkPatch(chmod).join(), /mode/);
+});
+
+test('render: neutralizes mentions, images and HTML from model output', () => {
+  const md = renderComment({ ...base, report: { ...report, summary: 'cc @octocat ![x](https://evil.example/t.png) <img src=x>', suspectedBugs: [{ file: 42, description: 'ping @admin' }] } });
+  assert.doesNotMatch(md, /@octocat|@admin/);
+  assert.doesNotMatch(md, /!\[x\]|<img/);
+  assert.match(md, /`42`/);
+});
