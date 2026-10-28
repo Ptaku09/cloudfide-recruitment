@@ -12,6 +12,7 @@ A Claude Code **custom agent** (`test-engineer`) with five **reusable skills**, 
 | **Deterministic guard on the agent's patch** (`.github/scripts/guard-patch.mjs`) | "Tests only" is enforced by code, not just the prompt. Every path in the patch, including both sides of a rename, must match a test-file pattern, and added lines are scanned for Anthropic tokens. Anything else rejects the whole patch. |
 | **Independent verification** | Results in the comment come from the `verify` job (typecheck, full suite, and coverage in both packages), not from the agent's own claims. |
 | **Sandboxed agent shell** (`.claude/ci-settings.json`) | Tests the agent writes are arbitrary code that runs while the OAuth token is in the job environment. Claude Code's bubblewrap sandbox gives every agent-run command no network access, so it cannot exfiltrate the token. WebFetch and WebSearch are denied, and edits to `.github/`, `.claude/` and `.env*` are blocked. |
+| **Agent config always comes from the base branch** | `claude-code-action` replaces `.claude/`, `CLAUDE.md`, `.mcp.json` and similar paths with the base branch's version before running, so a PR cannot weaken the agent, skills, or sandbox settings it is reviewed by. The workflow keeps that revert out of the agent's patch. |
 | **Sticky comment and job summary** | A single comment (hidden marker `<!-- pr-test-agent -->`) is updated on every push, so the PR doesn't fill up with duplicates. |
 | **Failing the check on purpose** | The run fails if the agent errors, verification fails, or the agent reports a suspected bug in application code (the agent drops such a test rather than "fixing" the app or asserting wrong behavior). |
 | **Same-repo PRs only, `pull_request` trigger** | `pull_request_target` together with running PR code is the classic Actions supply-chain hole; fork PRs are skipped. |
@@ -78,6 +79,7 @@ _Filled in from the demo PR — see below._
 
 - **Fork PRs are not supported.** They get no secrets, and the safe two-workflow pattern was out of scope.
 - **The bot's commit doesn't trigger CI.** Pushes made with `GITHUB_TOKEN` don't start workflows (this is also the loop prevention). Required checks would therefore block the merge.
+- **Changes to the agent, its skills or its settings only take effect after they merge**, because the base branch's `.claude/` is what runs.
 - **The token is present in the agent job.** Network isolation via the sandbox is the mitigation. A bug in the sandbox or in the action itself remains a residual risk.
 - **Output is non-deterministic.** Re-runs may produce different tests. Quality is bounded by the guard, verification, and review by the PR author.
 - **No mutation testing.** Coverage and passing tests don't prove the assertions are strong.

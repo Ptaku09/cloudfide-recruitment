@@ -4,7 +4,11 @@
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,
     "autoAllowBashIfSandboxed": true,
-    "network": { "allowedDomains": [], "strictAllowlist": true }
+    "network": {
+      "allowedDomains": [],
+      "strictAllowlist": true,
+      "allowLocalBinding": true
+    }
   },
   "permissions": {
     "deny": [

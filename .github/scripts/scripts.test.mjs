@@ -115,3 +115,9 @@ test('render: tolerates a partial report', () => {
   assert.match(md, /Partial/);
   assert.match(md, /`a\.ts`/);
 });
+
+test('render: verification did not run', () => {
+  const md = renderComment({ ...base, verify: null, pushed: false, after: { backend: null, frontend: null } })
+  assert.match(md, /Verification did not run/)
+  assert.doesNotMatch(md, /No test changes were needed/)
+});
