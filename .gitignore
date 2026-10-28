@@ -21,3 +21,7 @@ coverage/
 
 # macOS
 .DS_Store
+
+# PR test agent output
+.agent/
+.superpowers/
