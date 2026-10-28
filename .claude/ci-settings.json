@@ -1,0 +1,19 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "network": { "allowedDomains": [], "strictAllowlist": true }
+  },
+  "permissions": {
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Edit(/.github/**)",
+      "Edit(/.claude/**)",
+      "Edit(/.env*)",
+      "Read(/.env*)"
+    ]
+  }
+}
