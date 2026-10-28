@@ -10,6 +10,7 @@ import { useCreateTodoMutation } from './useCreateTodoMutation'
 import { useDeleteTodoMutation } from './useDeleteTodoMutation'
 import { useTodoFilters } from './useTodoFilters'
 import { useTodosBusy } from './useTodosBusy'
+import { useTodoStatsQuery } from './useTodoStatsQuery'
 import { useTodosQuery } from './useTodosQuery'
 import { useUpdateTodoMutation } from './useUpdateTodoMutation'
 
@@ -19,6 +20,7 @@ vi.mock('../api/todos', () => ({
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    stats: vi.fn(),
   },
 }))
 
@@ -154,4 +156,52 @@ it('filters and sorts tasks through state setters', () => {
   expect(result.current.visible).toEqual([todoFixture])
   act(() => result.current.setSort('priority'))
   expect(result.current.sort).toBe('priority')
+})
+
+it('loads statistics and passes the abort signal', async () => {
+  const { wrapper } = setup()
+  const stats = {
+    total: 2,
+    completed: 1,
+    active: 1,
+    overdue: 0,
+    byPriority: { low: 0, medium: 2, high: 0 },
+  }
+  vi.mocked(todosApi.stats).mockResolvedValue(stats)
+  const { result } = renderHook(() => useTodoStatsQuery(), { wrapper })
+  await waitFor(() => expect(result.current.isSuccess).toBe(true))
+  expect(result.current.data).toEqual(stats)
+  expect(todosApi.stats).toHaveBeenCalledWith(expect.any(AbortSignal))
+})
+
+it('invalidates statistics after create, update and delete succeed', async () => {
+  const { client, wrapper } = setup()
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  vi.mocked(todosApi.create).mockResolvedValue(todoFixture)
+  vi.mocked(todosApi.update).mockResolvedValue(todoFixture)
+  vi.mocked(todosApi.remove).mockResolvedValue(undefined)
+  const { result } = renderHook(
+    () => ({
+      create: useCreateTodoMutation(),
+      update: useUpdateTodoMutation(),
+      remove: useDeleteTodoMutation(),
+    }),
+    { wrapper },
+  )
+  await act(() => result.current.create.mutateAsync(todoFixture))
+  expect(invalidate).toHaveBeenCalledTimes(1)
+  await act(() => result.current.update.mutateAsync({ id: 7, input: {} }))
+  expect(invalidate).toHaveBeenCalledTimes(2)
+  await act(() => result.current.remove.mutateAsync(7))
+  expect(invalidate).toHaveBeenCalledTimes(3)
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: todoKeys.stats })
+})
+
+it('does not invalidate statistics when a mutation fails', async () => {
+  const { client, wrapper } = setup()
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  vi.mocked(todosApi.remove).mockRejectedValue(new Error('nope'))
+  const { result } = renderHook(() => useDeleteTodoMutation(), { wrapper })
+  await act(() => expect(result.current.mutateAsync(7)).rejects.toThrow('nope'))
+  expect(invalidate).not.toHaveBeenCalled()
 })

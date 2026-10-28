@@ -5,7 +5,7 @@ import { createTodosRouter } from '../src/features/todos/router.ts';
 import { todo } from './fixture.ts';
 
 function setup() {
-  const repository = { list: vi.fn().mockResolvedValue([todo]), create: vi.fn().mockResolvedValue(todo), get: vi.fn(), update: vi.fn(), delete: vi.fn() };
+  const repository = { list: vi.fn().mockResolvedValue([todo]), create: vi.fn().mockResolvedValue(todo), get: vi.fn(), update: vi.fn(), delete: vi.fn(), stats: vi.fn() };
   const app = express();
   app.use(express.json());
   app.use('/api/todos', createTodosRouter(repository));
@@ -85,4 +85,13 @@ it('deletes a task and responds 204 with no body', async () => {
   expect(response.status).toBe(204);
   expect(response.text).toBe('');
   expect(repository.delete).toHaveBeenCalledWith(1);
+});
+it('serves statistics from /stats instead of treating it as an id', async () => {
+  const { app, repository } = setup();
+  const stats = { total: 1, completed: 0, active: 1, overdue: 0, byPriority: { low: 0, medium: 0, high: 1 } };
+  repository.stats.mockResolvedValue(stats);
+  const response = await request(app).get('/api/todos/stats');
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual(stats);
+  expect(repository.get).not.toHaveBeenCalled();
 });
