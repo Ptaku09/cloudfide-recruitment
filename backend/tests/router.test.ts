@@ -32,3 +32,57 @@ it.each([{ title: '  ' }, { title: 'x'.repeat(121) }, { title: 'Task', priority:
     expect(repository.create).not.toHaveBeenCalled();
   },
 );
+it('gets a task by id', async () => {
+  const { app, repository } = setup();
+  repository.get.mockResolvedValue(todo);
+  const response = await request(app).get('/api/todos/1');
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual(todo);
+  expect(repository.get).toHaveBeenCalledWith(1);
+});
+it('returns 404 when a task is missing', async () => {
+  const { app, repository } = setup();
+  repository.get.mockResolvedValue(null);
+  repository.update.mockResolvedValue(null);
+  repository.delete.mockResolvedValue(false);
+  for (const response of [
+    await request(app).get('/api/todos/9'),
+    await request(app).patch('/api/todos/9').send({ completed: true }),
+    await request(app).delete('/api/todos/9'),
+  ]) {
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ detail: 'Task not found.' });
+  }
+});
+it.each(['abc', '0', '-1', '1.5'])('rejects invalid id %s with 422 without hitting the repository', async (id) => {
+  const { app, repository } = setup();
+  for (const response of [
+    await request(app).get(`/api/todos/${id}`),
+    await request(app).patch(`/api/todos/${id}`).send({ completed: true }),
+    await request(app).delete(`/api/todos/${id}`),
+  ]) expect(response.status).toBe(422);
+  expect(repository.get).not.toHaveBeenCalled();
+  expect(repository.update).not.toHaveBeenCalled();
+  expect(repository.delete).not.toHaveBeenCalled();
+});
+it('updates a task with the provided fields only', async () => {
+  const { app, repository } = setup();
+  repository.update.mockResolvedValue(todo);
+  const response = await request(app).patch('/api/todos/1').send({ title: '  New  ', completed: true });
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual(todo);
+  expect(repository.update).toHaveBeenCalledWith(1, { title: 'New', completed: true });
+});
+it.each([{}, { title: '' }, { unknown: 1 }])('rejects invalid update input: %j', async (payload) => {
+  const { app, repository } = setup();
+  expect((await request(app).patch('/api/todos/1').send(payload)).status).toBe(422);
+  expect(repository.update).not.toHaveBeenCalled();
+});
+it('deletes a task and responds 204 with no body', async () => {
+  const { app, repository } = setup();
+  repository.delete.mockResolvedValue(true);
+  const response = await request(app).delete('/api/todos/1');
+  expect(response.status).toBe(204);
+  expect(response.text).toBe('');
+  expect(repository.delete).toHaveBeenCalledWith(1);
+});
