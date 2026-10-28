@@ -66,7 +66,53 @@ node .github/scripts/guard-patch.mjs <(git add -A && git diff --cached)
 
 ## Example run
 
-_Filled in from the demo PR — see below._
+### Demo: PR #3, `feature/todo-stats`
+
+The PR adds a feature across both packages and deliberately ships **without tests**:
+- **Backend:** `GET /api/todos/stats` returns total, completed, active, overdue and per-priority counts. The work is done by a new `computeStats` module, `TodoRepository.stats()`, and a route registered before `/:id`.
+- **Frontend:** a `TodoStats` summary bar, a `useTodoStatsQuery` hook, `todosApi.stats`, and stats invalidation in the create/update/delete mutations.
+
+The feature also breaks existing tests: the `TodoStore` mock in `router.test.ts` no longer typechecks, and 12 `TodosPage` tests fail because the page now renders a query-backed component.
+
+**What happened in the workflow:**
+
+1. **agent**: baseline coverage was recorded (backend lines 73.72%, frontend 86.87%). The agent ran in diff mode and used its skills as follows:
+   - `analyze-changes` classified 15 changed files. It tested 10 and skipped 5 with reasons: type-only `types.ts` ×2, `openapi.json` (documentation), `queryKeys.ts` (constant, exercised through the hook tests), and `styles.css`.
+   - `backend-tests` produced `stats.test.ts`:
+     - empty list;
+     - completed/active/priority counts;
+     - overdue only for active tasks due *before* today, so due today is not overdue and completed past-due tasks don't count.
+
+     It extended `repository.test.ts` (fake timers pin "today") and `router.test.ts`, which adds `stats()` to the mock and asserts that `/stats` is not swallowed by `/:id`.
+   - `frontend-tests` produced `TodoStats.test.tsx` (hidden while loading or empty, the overdue badge only when there are overdue tasks) and stats tests in `todoHooks.test.tsx` (the query hook, and invalidation after create, update and delete). It extended `api/todos.test.ts` and stubbed `TodoStats` in the two existing `TodosPage` test files: an intentional behavior change, so the existing tests were updated.
+   - `run-tests` ran each file, then the full suites and typecheck.
+   - `test-report` wrote `report.json` and `report.md`.
+2. **verify** (no secrets): the guard passed (8 test files only), the patch applied, and both packages typechecked. **Backend: 84 passed, 0 failed. Frontend: 99 passed, 0 failed.**
+3. **publish**: pushed `bbbfcc7` (`test: add/update tests for PR #3 [pr-test-agent]`, by `github-actions[bot]`, 8 files, +161/−1) and updated the sticky comment:
+
+| Package | Metric | Before → After |
+| --- | --- | --- |
+| backend | lines | 73.72% → 80.50% |
+| backend | branches | 81.81% → 94.54% |
+| frontend | lines | 86.87% → 98.12% |
+| frontend | branches | 87.41% → 94.40% |
+
+The bot's push produced a run that GitHub held for maintainer approval. If approved, every job is skipped by the `sender != github-actions[bot]` guard, so there is no loop.
+
+### Coverage pass: PR #2, `test/raise-coverage`
+
+The same agent ran locally in `MODE=full` over the whole codebase and added or updated 17 test files.
+
+| Package | Lines before → after | Tests before → after |
+| --- | --- | --- |
+| backend | 33.02% → 78.89% | 48 → 79 |
+| frontend | 47.68% → 98.01% | 18 → 91 |
+
+`main.ts`, `lifespan.ts`, the generated Prisma client and the design system were skipped, with reasons in the report.
+
+Running it surfaced two issues in the setup itself, both fixed in that PR:
+- **macOS sandbox:** it blocked Supertest's localhost listener. The agent reported this and skipped those tests instead of changing settings; the fix was `allowLocalBinding`.
+- **First CI run:** `claude-code-action`'s base-branch config restore showed up in the agent patch. The guard rejected it, the run failed safely, and the fix was to exclude those paths when staging.
 
 ## Assumptions
 
