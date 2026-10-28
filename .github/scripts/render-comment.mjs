@@ -27,6 +27,8 @@ export function renderComment({ report: raw, verify, baseline, after, runUrl, pu
 
   if (!report) {
     lines.push(`❌ The agent did not produce a report. See the [workflow run](${runUrl}) for details.`, '');
+  } else if (!verify) {
+    lines.push(`❌ Verification did not run, so nothing was pushed (for example, the patch guard rejected the agent's changes). See the [workflow run](${runUrl}).`, '');
   } else if (pushed) {
     lines.push(`✅ Added ${report.testsWritten.length} and updated ${report.testsUpdated.length} test file(s); verified and pushed to this branch.`, '');
   } else if (changed && !verified) {

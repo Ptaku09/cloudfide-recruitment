@@ -89,7 +89,10 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           mkdir -p .agent
-          git add -A
+          # claude-code-action restores these paths from the base branch so PR-controlled config never
+          # runs (see its restore-config.ts). That revert is not the agent's work: keep it out of the patch.
+          git add -A -- . ':!.claude' ':!.mcp.json' ':!.claude.json' ':!.gitmodules' ':!.ripgreprc' \
+            ':!CLAUDE.md' ':!CLAUDE.local.md' ':!.husky'
           git diff --cached --binary > .agent/agent.patch
           git diff --cached --stat
           # Early check with the literal token value; the verify job re-checks without secrets.
