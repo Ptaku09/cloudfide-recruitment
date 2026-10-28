@@ -1,0 +1,248 @@
+name: PR Test Agent
+
+# Writes/updates unit tests for the code changed in a pull request, verifies them
+# without secrets, then commits them to the PR branch and reports on the PR.
+# See SOLUTION.md for the design.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+
+permissions: {}
+
+concurrency:
+  group: pr-test-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  agent:
+    name: Write tests (agent)
+    # Same-repo PRs only: fork PRs get no secrets, and pull_request_target is deliberately not used.
+    # Pushes made by this workflow use GITHUB_TOKEN and never retrigger it; the sender check is a second guard.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      github.event.sender.login != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      agent_outcome: ${{ steps.claude.outcome }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          (cd backend && npm ci)
+          (cd frontend && npm ci)
+
+      - name: Baseline coverage
+        run: |
+          mkdir -p .agent/baseline
+          for pkg in backend frontend; do
+            (cd "$pkg" && npx vitest run --coverage --coverage.reportOnFailure) || echo "::warning::$pkg tests fail before the agent runs"
+            cp "$pkg/coverage/coverage-summary.json" ".agent/baseline/$pkg.json" || true
+          done
+
+      - name: Install sandbox prerequisites
+        # Claude Code's Bash sandbox (bubblewrap) blocks network access for every command the agent runs,
+        # including the tests it writes. Ubuntu 24.04 restricts unprivileged user namespaces by default.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run test-engineer agent
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: MODE=diff BASE_SHA=${{ github.event.pull_request.base.sha }}
+          claude_args: >-
+            --agent test-engineer
+            --settings .claude/ci-settings.json
+            --model ${{ vars.PR_TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
+            --allowedTools Read,Glob,Grep,Write,Edit,Bash
+            --disallowedTools WebFetch,WebSearch
+
+      - name: Collect agent changes
+        if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          mkdir -p .agent
+          git add -A
+          git diff --cached --binary > .agent/agent.patch
+          git diff --cached --stat
+          # Early check with the literal token value; the verify job re-checks without secrets.
+          node .github/scripts/guard-patch.mjs .agent/agent.patch
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: agent-output
+          path: .agent/
+          include-hidden-files: true
+          retention-days: 7
+
+  verify:
+    name: Verify tests (no secrets)
+    needs: agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: agent-output
+          path: .agent
+
+      - name: Guard - test files only, no secrets
+        run: node .github/scripts/guard-patch.mjs .agent/agent.patch
+
+      - name: Apply agent patch
+        run: |
+          if [ -s .agent/agent.patch ]; then git apply --index .agent/agent.patch; fi
+          git diff --cached --stat
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          (cd backend && npm ci)
+          (cd frontend && npm ci)
+
+      - name: Typecheck, test and measure coverage
+        run: |
+          mkdir -p .agent/after
+          for pkg in backend frontend; do
+            (cd "$pkg" && npm run typecheck) && typecheck=pass || typecheck=fail
+            (cd "$pkg" && npx vitest run --coverage --coverage.reportOnFailure \
+              --reporter=default --reporter=json --outputFile.json="../.agent/vitest-$pkg.json") && tests=pass || tests=fail
+            cp "$pkg/coverage/coverage-summary.json" ".agent/after/$pkg.json" || true
+            echo "$pkg $typecheck $tests" >> .agent/outcomes.txt
+          done
+          node -e '
+            const fs = require("fs");
+            const verify = {};
+            for (const line of fs.readFileSync(".agent/outcomes.txt", "utf8").trim().split("\n")) {
+              const [pkg, typecheck, tests] = line.split(" ");
+              let passed = 0, failed = 0;
+              try { ({ numPassedTests: passed, numFailedTests: failed } = JSON.parse(fs.readFileSync(`.agent/vitest-${pkg}.json`, "utf8"))); } catch {}
+              verify[pkg] = { typecheck, tests, passed, failed };
+            }
+            fs.writeFileSync(".agent/verify.json", JSON.stringify(verify, null, 2));
+            console.log(verify);
+          '
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: verify-output
+          path: |
+            .agent/verify.json
+            .agent/after/
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Require all checks to pass
+        run: grep -q fail .agent/outcomes.txt && { cat .agent/outcomes.txt; exit 1; } || exit 0
+
+  publish:
+    name: Publish results
+    needs: [agent, verify]
+    if: always() && needs.agent.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: agent-output
+          path: .agent
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: verify-output
+          path: .agent
+
+      - name: Commit and push tests
+        id: push
+        if: needs.verify.result == 'success'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ ! -s .agent/agent.patch ]; then echo "No test changes to push."; exit 0; fi
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then echo "::warning::PR branch moved since the agent ran; not pushing."; exit 0; fi
+          git apply --index .agent/agent.patch
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "test: add/update tests for PR #$PR_NUMBER [pr-test-agent]"
+          git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Render report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUSHED: ${{ steps.push.outputs.pushed == 'true' }}
+        run: |
+          node .github/scripts/render-comment.mjs .agent > .agent/comment.md
+          cat .agent/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upsert PR comment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const body = require('fs').readFileSync('.agent/comment.md', 'utf8');
+            const issue = { owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number };
+            const comments = await github.paginate(github.rest.issues.listComments, issue);
+            const existing = comments.find((c) => c.user.type === 'Bot' && c.body.startsWith('<!-- pr-test-agent -->'));
+            if (existing) await github.rest.issues.updateComment({ ...issue, comment_id: existing.id, body });
+            else await github.rest.issues.createComment({ ...issue, body });
+
+      - name: Fail on agent error, failed verification or suspected bugs
+        env:
+          AGENT_OUTCOME: ${{ needs.agent.outputs.agent_outcome }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          bugs=$(node -e 'try { const r = require("./.agent/report.json"); console.log(Array.isArray(r.suspectedBugs) ? r.suspectedBugs.length : 0) } catch { console.log(-1) }')
+          echo "agent=$AGENT_OUTCOME verify=$VERIFY_RESULT suspectedBugs=$bugs"
+          [ "$AGENT_OUTCOME" = success ] && [ "$VERIFY_RESULT" = success ] && [ "$bugs" = 0 ]
