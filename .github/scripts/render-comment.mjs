@@ -6,7 +6,9 @@ import { pathToFileURL } from 'node:url';
 export const MARKER = '<!-- pr-test-agent -->';
 const PACKAGES = ['backend', 'frontend'];
 const icon = (outcome) => (outcome === 'pass' ? '✅' : '❌');
-const cell = (text) => String(text).replaceAll('|', '\\|').replaceAll('\n', ' ');
+// Model output is untrusted: no mentions, images, raw HTML, or code-span breakouts under the bot's name.
+const safe = (text) => String(text ?? '').replaceAll('@', '@\u200b').replaceAll('<', '&lt;').replaceAll('![', '!\\[').replaceAll('`', "'");
+const cell = (text) => safe(text).replaceAll('|', '\\|').replaceAll('\n', ' ');
 const pct = (summary, metric) => {
   const value = summary?.total?.[metric]?.pct;
   return typeof value === 'number' ? `${value.toFixed(2)}%` : 'n/a';
@@ -40,14 +42,14 @@ export function renderComment({ report: raw, verify, baseline, after, runUrl, pu
   }
 
   if (report) {
-    lines.push(report.summary, '', '### Decisions', '', '| File | Decision | Reason | Tests |', '| --- | --- | --- | --- |');
+    lines.push(safe(report.summary), '', '### Decisions', '', '| File | Decision | Reason | Tests |', '| --- | --- | --- | --- |');
     for (const d of report.decisions) {
       lines.push(`| \`${cell(d.file)}\` | ${cell(d.action ?? '')} | ${cell(d.reason ?? '')} | ${d.tests.map((t) => `\`${cell(t)}\``).join('<br>')} |`);
     }
     lines.push('');
     if (report.suspectedBugs.length) {
       lines.push('### ⚠️ Suspected bugs', '', 'Tests for these cases were left out because they fail against the current code:', '');
-      for (const bug of report.suspectedBugs) lines.push(`- \`${bug.file}\`: ${bug.description}`);
+      for (const bug of report.suspectedBugs) lines.push(`- \`${safe(bug.file)}\`: ${safe(bug.description)}`);
       lines.push('');
     }
   }
